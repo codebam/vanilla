@@ -1,6 +1,5 @@
 /*
- * Copyright (C) 2012 Christopher Eby <kreed@kreed.org>
- * Copyright (C) 2015 Adrian Ulrich <adrian@blinkenlights.ch>
+ * Copyright (C) 2017 Adrian Ulrich <adrian@blinkenlights.ch>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,17 +25,22 @@ package ch.blinkenlights.android.vanilla;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.util.AttributeSet;
-import android.util.DisplayMetrics;
+import android.view.View;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
-import android.view.View;
 import android.view.ViewConfiguration;
 import android.widget.Scroller;
+
+import java.lang.IllegalStateException;
+import java.lang.IllegalArgumentException;
+
+import android.util.Log;
+
+
 
 /**
  * Displays a flingable/draggable View of cover art/song info images
@@ -44,75 +48,47 @@ import android.widget.Scroller;
  */
 public final class CoverView extends View implements Handler.Callback {
 	/**
-	 * The system-provided snap velocity, used as a threshold for detecting
-	 * flings.
+	 * Maximum amount of pixels we are allowed to scroll to consider
+	 * touch events to be normal touches.
 	 */
-	private static int sSnapVelocity = -1;
+	private final static double TOUCH_MAX_SCROLL_PX = 10;
 	/**
-	 * The screen density, from {@link DisplayMetrics#density}.
+	 * The system provided display density
 	 */
 	private static double sDensity = -1;
 	/**
-	 * The Handler with which to do background work. Will be null until
-	 * setupHandler is called.
+	 * The minimum velocity to move to the next song
 	 */
-	private Handler mHandler;
-	/**
-	 * A handler running on the UI thread, for UI operations.
-	 */
-	private final Handler mUiHandler = new Handler(this);
-	/**
-	 * How to render cover art and metadata. One of
-	 * CoverBitmap.STYLE_*
-	 */
-	private int mCoverStyle;
-	/**
-	 * Interface to respond to CoverView motion actions.
-	 */
-	public interface Callback {
-		/**
-		 * Called after the view has scrolled to the previous or next cover.
-		 *
-		 * @param delta -1 for the previous cover, 1 for the next.
-		 */
-		void shiftCurrentSong(int delta);
-		/**
-		 * Called when the user has swiped up on the view.
-		 */
-		void upSwipe();
-		/**
-		 * Called when the user has swiped down on the view.
-		 */
-		void downSwipe();
-	}
-	/**
-	 * The instance of the callback.
-	 */
-	private Callback mCallback;
-	/**
-	 * The current set of songs: 0 = previous, 1 = current, and 2 = next.
-	 */
-	private Song[] mSongs = new Song[3];
-	/**
-	 * The covers for the current songs: 0 = previous, 1 = current, and 2 = next.
-	 */
-	private Bitmap[] mBitmaps = new Bitmap[3];
-	/**
-	 * The bitmaps to be drawn. Usually the same as mBitmaps, unless scrolling.
-	 */
-	private Bitmap[] mActiveBitmaps = mBitmaps;
-	/**
-	 * Cover art to use when a song has no cover art in no info display styles.
-	 */
-	private Bitmap mDefaultCover;
-	/**
-	 * Computes scroll animations.
-	 */
-	private final Scroller mScroller;
+	private static double sSnapVelocity = -1;
 	/**
 	 * Computes scroll velocity to detect flings.
 	 */
 	private VelocityTracker mVelocityTracker;
+	/**
+	 * The context.
+	 */
+	private final Context mContext;
+	/**
+	 * The scroller instance we are using.
+	 */
+	private final CoverView.Scroller mScroller;
+	/**
+	 * Our callback to dispatch song events.
+	 */
+	private CoverView.Callback mCallback;
+	/**
+	 * Indicates that we attempted to query and update our songs but couldn't as the
+	 * view was not yet ready.
+	 */
+	private boolean mPendingQuery;
+	/**
+	 * The x coordinate of the initial touch event.
+	 */
+	private float mInitialMotionX;
+	/**
+	 * The y coordinate of the initial touch event.
+	 */
+	private float mInitialMotionY;
 	/**
 	 * The x coordinate of the last touch down or move event.
 	 */
@@ -122,82 +98,189 @@ public final class CoverView extends View implements Handler.Callback {
 	 */
 	private float mLastMotionY;
 	/**
-	 * The x coordinate of the last touch down event.
+	 * The message handler used by this class.
 	 */
-	private float mStartX;
+	private Handler mHandler;
 	/**
-	 * The y coordinate of the last touch down event.
+	 * Our current scroll position.
+	 * Setting this to '0' means that we will display bitmap[0].
 	 */
-	private float mStartY;
+	private int mScrollX = -1;
 	/**
-	 * Ignore the next pointer up event, for long presses.
+	 * The style to use for the cover.
 	 */
-	private boolean mIgnoreNextUp;
+	private int mCoverStyle = -1;
 	/**
-	 * If true, querySongs was called before the view initialized and should
-	 * be called when initialization finishes.
+	 * Cached songs, used to check if mCacheBitmaps is still valid
 	 */
-	private boolean mPendingQuery;
+	private final Song[] mCacheSongs = new Song[3];
 	/**
-	 * The current x scroll position of the view.
-	 *
-	 * Scrolling code from {@link View} is not used for this class since many of
-	 * its features are not required.
+	 * The pre-generated bitmaps for all 3 songs
 	 */
-	private int mScrollX;
+	private final Bitmap[] mCacheBitmaps = new Bitmap[3];
 	/**
-	 * True if a scroll is in progress (i.e. mScrollX != getWidth()), false
-	 * otherwise.
+	 * A WIP copy: We use this (iff available) to draw.
+	 * This allows us to update mCacheBitmaps while scrolling
 	 */
-	private boolean mScrolling;
-
+	private final Bitmap[] mSnapshotBitmaps = new Bitmap[3];
 	/**
-	 * Constructor intended to be called by inflating from XML.
+	 * Our public callback interface
 	 */
-	public CoverView(Context context, AttributeSet attributes)
-	{
-		super(context, attributes);
-
-		mScroller = new Scroller(context);
-
-		if (sSnapVelocity == -1) {
-			sSnapVelocity = ViewConfiguration.get(context).getScaledMinimumFlingVelocity();
-			sDensity = context.getResources().getDisplayMetrics().density;
-		}
+	public interface Callback {
+		void shiftCurrentSong(int delta);
+		void upSwipe();
+		void downSwipe();
 	}
 
 	/**
-	 * Setup the Handler and callback. This must be called before
-	 * the CoverView is used.
-	 *
-	 * @param looper A looper created on a worker thread.
-	 * @param callback The callback for nextSong/previousSong
-	 * @param style One of CoverBitmap.STYLE_*
+	 * Constructs a new CoverView class, note that setup() must be called
+	 * before the view becomes useable.
 	 */
-	public void setup(Looper looper, Callback callback, int style)
-	{
-		mHandler = new Handler(looper, this);
+	public CoverView(Context context, AttributeSet attributes) {
+		super(context, attributes);
+		if (sDensity == -1) {
+			sDensity = context.getResources().getDisplayMetrics().density;
+			sSnapVelocity = ViewConfiguration.get(context).getScaledMinimumFlingVelocity();
+		}
+		mContext = context;
+		mScroller = new CoverView.Scroller();
+	}
+
+	/**
+	 * Configures and sets up this view
+	 */
+	public void setup(Looper looper, Callback callback, int style) {
+		mHandler = new Handler(looper, this); // FIXME: we need to destroy the handler
 		mCallback = callback;
 		mCoverStyle = style;
 	}
 
 	/**
-	 * Reset the scroll position to its default state.
+	 * Sent if the songs timeline changed and we should check if
+	 * mCacheBitmap is stale.
+	 * Just calls querySongsInternal() via handler to ensure
+	 * that we do this in a background thread.
 	 */
-	private void resetScroll()
-	{
-		if (!mScroller.isFinished())
-			mScroller.abortAnimation();
-		mScrollX = getWidth();
-		invalidate();
+	public void querySongs() {
+		mHandler.sendEmptyMessage(MSG_QUERY_SONGS);
 	}
 
+	/**
+	 * Called if a specific song got replaced.
+	 * The current implementation does not take this hint into
+	 * account as querySongsInternal() already tries to be efficient.
+	 */
+	public void replaceSong(int delta, Song song) {
+		querySongs();
+	}
+
+	/**
+	 * Called by querySongs() - this runs in a background thread.
+	 */
+	private void querySongsInternal() {
+		CRASH_IF_MAIN();
+		DEBUG("querySongsInternal");
+
+		if (getWidth() < 1 || getHeight() < 1) {
+			mPendingQuery = true;
+			return;
+		}
+
+		boolean changed = false;
+		PlaybackService service = PlaybackService.get(mContext);
+
+		if (mScrollX < 0) { // initialize mScrollX to show cover '1' by default.
+			mScrollX = getWidth();
+			changed = true;
+		}
+
+		for (int i = 0; i <= 2; i++) {
+			Song song = service.getSong(i - 1);
+			DEBUG(">> SONG AT POS "+i+" is "+song);
+			if (mCacheSongs[i] != song) {
+				mCacheSongs[i] = song;
+				mCacheBitmaps[i] = generateBitmap(song);
+				changed = true;
+				DEBUG(">> !!! was different, updated it.");
+			}
+		}
+
+		if (changed) {
+			DEBUG("Invalidating current view!");
+			postInvalidateOnAnimation();
+		}
+	}
+
+	/**
+	 * Returns a correctly sized cover bitmap for given song
+	 */
+	private Bitmap generateBitmap(Song song) {
+		int style = mCoverStyle;
+		Bitmap cover = song == null ? null : song.getCover(mContext);
+
+		if (cover == null && style != CoverBitmap.STYLE_OVERLAPPING_BOX) {
+			cover = CoverBitmap.generateDefaultCover(mContext, getWidth(), getHeight());
+		}
+
+		return CoverBitmap.createBitmap(mContext, style, cover, song, getWidth(), getHeight());
+	}
+
+
+	private final static int MSG_QUERY_SONGS = 1;
+	private final static int MSG_LONG_CLICK = 2;
+	private final static int MSG_SHIFT_SONG = 3;
+
 	@Override
-	protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight)
-	{
+	public boolean handleMessage(Message message) {
+		switch (message.what) {
+			case MSG_QUERY_SONGS:
+				querySongsInternal();
+				break;
+			case MSG_LONG_CLICK:
+				if (scrollIsNotSignificant()) {
+					performLongClick();
+				}
+				break;
+			case MSG_SHIFT_SONG:
+				DEBUG("Shifting to song: "+message.arg1);
+				mCallback.shiftCurrentSong(message.arg1);
+				break;
+			default:
+				throw new IllegalArgumentException("Unknown message received: "+message.what);
+		}
+		return true;
+	}
+
+	/**
+	 * Triggers if the view changes its size, may call querySongs() if it was called
+	 * previously but had to be aborted as the view was not yet laid out.
+	 */
+	@Override
+	protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
 		if (mPendingQuery && width != 0 && height != 0) {
 			mPendingQuery = false;
-			querySongs(PlaybackService.get(getContext()));
+			querySongs();
+		}
+	}
+
+	/**
+	 * Lays out this view - only handles our specific use cases
+	 */
+	@Override
+	protected void onMeasure(int widthSpec, int heightSpec) {
+		// This implementation only tries to handle two cases: use in the
+		// FullPlaybackActivity, where we want to fill the whole screen,
+		// and use in the  MiniPlaybackActivity, where we want to be square.
+
+		int width = View.MeasureSpec.getSize(widthSpec);
+		int height = View.MeasureSpec.getSize(heightSpec);
+		if  (View.MeasureSpec.getMode(widthSpec) == View.MeasureSpec.EXACTLY && View.MeasureSpec.getMode(heightSpec) == View.MeasureSpec.EXACTLY) {
+			// FullPlaybackActivity: fill screen
+			setMeasuredDimension(width, height);
+		} else {
+			// MiniPlaybackActivity: be square
+			int size = Math.min(width, height);
+			setMeasuredDimension(size, size); 
 		}
 	}
 
@@ -205,15 +288,16 @@ public final class CoverView extends View implements Handler.Callback {
 	 * Paint the cover art views to the canvas.
 	 */
 	@Override
-	protected void onDraw(Canvas canvas)
-	{
+	protected void onDraw(Canvas canvas) {
 		int width = getWidth();
 		int height = getHeight();
 		int x = 0;
 		int scrollX = mScrollX;
 		double padding = 14 * sDensity;
+		Bitmap bitmap;
 
-		for (Bitmap bitmap : mActiveBitmaps) {
+		for (int i=0; i <= 2 ; i++) {
+			bitmap = mSnapshotBitmaps[i] != null ? mSnapshotBitmaps[i] : mCacheBitmaps[i];
 			if (bitmap != null && scrollX + width > x && scrollX < x + width) {
 				int xOffset = (width - bitmap.getWidth()) / 2;
 				int yOffset = (int)(padding + (height - bitmap.getHeight()) / 2);
@@ -221,293 +305,206 @@ public final class CoverView extends View implements Handler.Callback {
 			}
 			x += width;
 		}
+		advanceScroll();
 	}
 
 	/**
-	 * Scrolls the view when dragged. Animates a fling to one of the three covers
-	 * when finished. The cover flung to will be either the nearest cover, or if
-	 * the fling is fast enough, the cover in the direction of the fling.
-	 *
-	 * Also performs a click on the view when it is tapped without dragging.
+	 * Advances to the next frame of the animation.
+	 */
+	private void advanceScroll() {
+		boolean running = mScroller.scrollRunning();
+		if (running) {
+			mScrollX = mScroller.getX();
+			postInvalidateOnAnimation();
+
+			if (!mScroller.scrollRunning()) {
+				// just hit the end!
+				for (int i=0; i <= 2; i++) {
+					mSnapshotBitmaps[i] = null;
+				}
+				mScrollX = getWidth();
+				DEBUG("Scroll finished, invalidating all snapshot bitmaps!");
+			}
+			DEBUG("PENDING INVALIDATION -> "+mScrollX);
+		}
+	}
+
+	/**
+	 * Handles all touch events received by this view.
 	 */
 	@Override
-	public boolean onTouchEvent(MotionEvent ev)
-	{
-		if (mVelocityTracker == null)
-			mVelocityTracker = VelocityTracker.obtain();
-		mVelocityTracker.addMovement(ev);
-
+	public boolean onTouchEvent(MotionEvent ev) {
 		float x = ev.getX();
 		float y = ev.getY();
 		int scrollX = mScrollX;
 		int width = getWidth();
+		boolean invalidate = false;
+
+		if (mScroller.scrollRunning()) // Disallow any touches while the animation runs. FIXME: we may want to re-implement this.
+			return false;
+
+		if (mVelocityTracker == null)
+			mVelocityTracker = VelocityTracker.obtain();
+		mVelocityTracker.addMovement(ev);
 
 		switch (ev.getAction()) {
-		case MotionEvent.ACTION_DOWN:
-			if (!mScroller.isFinished()) {
-				mScroller.abortAnimation();
-				mActiveBitmaps = mBitmaps;
+			case MotionEvent.ACTION_DOWN: {
+				mLastMotionX = mInitialMotionX = x;
+				mLastMotionY = mInitialMotionY = y;
+
+				mHandler.sendEmptyMessageDelayed(MSG_LONG_CLICK, ViewConfiguration.getLongPressTimeout());
+				break;
 			}
+			case MotionEvent.ACTION_MOVE: {
+				final float deltaX = mLastMotionX - x;
+				final float deltaY = mLastMotionY - y;
 
-			mStartX = x;
-			mStartY = y;
-			mLastMotionX = x;
-			mLastMotionY = y;
-			mScrolling = true;
-
-			mUiHandler.sendEmptyMessageDelayed(MSG_LONG_CLICK, ViewConfiguration.getLongPressTimeout());
-			break;
-		case MotionEvent.ACTION_MOVE: {
-			float deltaX = mLastMotionX - x;
-			float deltaY = mLastMotionY - y;
-
-			if (Math.abs(deltaX) > Math.abs(deltaY)) {
-				if (deltaX < 0) {
-					int availableToScroll = scrollX - (mSongs[0] == null ? width : 0);
-					if (availableToScroll > 0) {
-						mScrollX += Math.max(-availableToScroll, (int)deltaX);
-						invalidate();
-					}
-				} else if (deltaX > 0) {
-					int availableToScroll = width * 2 - scrollX;
-					if (availableToScroll > 0) {
-						mScrollX += Math.min(availableToScroll, (int)deltaX);
-						invalidate();
+				if (Math.abs(deltaX) > Math.abs(deltaY)) { // only change X if the fling is horizontal
+					if (deltaX < 0) {
+						int availableToScroll = scrollX - (mCacheSongs[0] == null ? width : 0);
+						if (availableToScroll > 0) {
+							mScrollX += Math.max(-availableToScroll, (int)deltaX);
+							invalidate = true;
+						}
+					} else if (deltaX > 0) {
+						int availableToScroll = width * 2 - scrollX;
+						if (availableToScroll > 0) {
+							mScrollX += Math.min(availableToScroll, (int)deltaX);
+							invalidate = true;
+						}
 					}
 				}
+
+				mLastMotionX = x;
+				mLastMotionY = y;
+				break;
 			}
-
-			mLastMotionX = x;
-			mLastMotionY = y;
-			break;
-		}
-		case MotionEvent.ACTION_UP: {
-			mUiHandler.removeMessages(MSG_LONG_CLICK);
-
-			VelocityTracker velocityTracker = mVelocityTracker;
-			velocityTracker.computeCurrentVelocity(250);
-			int velocityX = (int) velocityTracker.getXVelocity();
-			int velocityY = (int) velocityTracker.getYVelocity();
-			int mvx = Math.abs(velocityX);
-			int mvy = Math.abs(velocityY);
-
-			// If -1 or 1, play the previous or next song, respectively and scroll
-			// to that song's cover. If 0, just scroll back to current song's cover.
-			int whichCover = 0;
-			int min = mSongs[0] == null ? 0 : -1;
-			int max = 1;
-
-			if (Math.abs(mStartX - x) + Math.abs(mStartY - y) < 10) {
-				// A long press was performed and thus the normal action should
-				// not be executed.
-				if (mIgnoreNextUp)
-					mIgnoreNextUp = false;
-				else
-					performClick();
-			} else if (mvx > sSnapVelocity || mvy > sSnapVelocity) {
-				if (mvy > mvx) {
-					if (velocityY > 0)
-						mCallback.downSwipe();
-					else
-						mCallback.upSwipe();
-				} else {
-					if (velocityX > 0)
-						whichCover = min;
-					else
-						whichCover = max;
-				}
-			} else {
-				int nearestCover = (scrollX + width / 2) / width - 1;
-				whichCover = Math.max(min, Math.min(nearestCover, max));
-			}
-
-			if (whichCover != 0) {
-				scrollX = scrollX - width * whichCover;
-				Bitmap[] bitmaps = mBitmaps;
-				// Save the two covers being scrolled between, so that if one
-				// of them changes from switching songs (which can happen when
-				// shuffling), the new cover doesn't pop in during the scroll.
-				// mActiveBitmaps is reset when the scroll is finished.
-				if (whichCover == 1) {
-					mActiveBitmaps = new Bitmap[] { bitmaps[1], bitmaps[2], null };
-				} else {
-					mActiveBitmaps = new Bitmap[] { null, bitmaps[0], bitmaps[1] };
-				}
-				mCallback.shiftCurrentSong(whichCover);
-				mScrollX = scrollX;
-			}
-
-			int delta = width - scrollX;
-			mScroller.startScroll(scrollX, 0, delta, 0, (int)(Math.abs(delta) * 2 / sDensity));
-			mUiHandler.sendEmptyMessage(MSG_SCROLL);
-
-			if (mVelocityTracker != null) {
+			case MotionEvent.ACTION_UP: {
+				VelocityTracker velocityTracker = mVelocityTracker;
+				velocityTracker.computeCurrentVelocity(250);
+				final int velocityX = (int) velocityTracker.getXVelocity();
+				final int velocityY = (int) velocityTracker.getYVelocity();
 				mVelocityTracker.recycle();
 				mVelocityTracker = null;
-			}
 
-			break;
-		}
-		}
-		return true;
-	}
+				final int mvx = Math.abs(velocityX);
+				final int mvy = Math.abs(velocityY);
+				final float distanceX = mLastMotionX - mInitialMotionX;
+				int whichCover = 0;
 
-	/**
-	 * Generates a bitmap for the given song.
-	 *
-	 * @param i The position of the song in mSongs.
-	 */
-	private void generateBitmap(int i)
-	{
-		if(getWidth() == 0 || getHeight() == 0) {
-			// View isn't laid out - can't generate the bitmap until we know the size
-			mPendingQuery = true;
-			return;
-		}
-
-		Song song = mSongs[i];
-
-		int style = mCoverStyle;
-		Context context = getContext();
-		Bitmap cover = song == null ? null : song.getCover(context);
-
-		if (cover == null && style != CoverBitmap.STYLE_OVERLAPPING_BOX) {
-			if (mDefaultCover == null) {
-				mDefaultCover = CoverBitmap.generateDefaultCover(context, getWidth(), getHeight());
-			}
-			cover = mDefaultCover;
-		}
-
-		mBitmaps[i] = CoverBitmap.createBitmap(context, style, cover, song, getWidth(), getHeight());
-		postInvalidate();
-	}
-
-	/**
-	 * Set the Song at position <code>i</code> to <code>song</code>, generating
-	 * the bitmap for it in the background if needed.
-	 */
-	public void setSong(int i, Song song)
-	{
-		if (song == mSongs[i])
-			return;
-
-		mSongs[i] = song;
-		mBitmaps[i] = null;
-		if (song != null) {
-			mHandler.sendMessage(mHandler.obtainMessage(MSG_GENERATE_BITMAP, i, 0));
-		}
-	}
-
-	/**
-	 * Query all songs. Must be called on the UI thread.
-	 *
-	 * @param service Service to query from.
-	 */
-	public void querySongs(PlaybackService service)
-	{
-		if (getWidth() == 0 || getHeight() == 0) {
-			mPendingQuery = true;
-			return;
-		}
-
-		mHandler.removeMessages(MSG_GENERATE_BITMAP);
-
-		Song[] songs = mSongs;
-		Bitmap[] bitmaps = mBitmaps;
-		Song[] newSongs = { service.getSong(-1), service.getSong(0), service.getSong(1) };
-		Bitmap[] newBitmaps = new Bitmap[3];
-		mSongs = newSongs;
-		mBitmaps = newBitmaps;
-		if (!mScrolling)
-			mActiveBitmaps = newBitmaps;
-
-		for (int i = 0; i != 3; ++i) {
-			if (newSongs[i] == null)
-				continue;
-
-			for (int j = 0; j != 3; ++j) {
-				if (newSongs[i] == songs[j]) {
-					newBitmaps[i] = bitmaps[j];
-					break;
+				if (scrollIsNotSignificant()) {
+					if (mHandler.hasMessages(MSG_LONG_CLICK)) {
+						// long click didn't fire yet -> consider this to be a normal click
+						performClick();
+					}
+				} else if (Math.abs(distanceX) > width/2) {
+					whichCover = distanceX < 0 ? 1 : -1;
+				} else if (mvx > sSnapVelocity || mvy > sSnapVelocity) {
+					if (mvy > mvx) {
+						if (velocityY > 0)
+							mCallback.downSwipe();
+						else
+							mCallback.upSwipe();
+					} else {
+						whichCover = velocityX < 0 ? 1 : -1;
+					}
 				}
-			}
 
-			if (newBitmaps[i] == null) {
-				mHandler.sendMessage(mHandler.obtainMessage(MSG_GENERATE_BITMAP, i, 0));
+				// Ensure that the target song actually exists.
+				// Eg: We may not have song 0 in random mode.
+				if (mCacheSongs[1+whichCover] == null)
+					whichCover = 0;
+
+				final int scrollTargetX = width + whichCover*width;
+				if (whichCover != 0) {
+					// Grab a snapshot of the bitmaps which will be used
+					// while the animation is running, so that we can concurrently
+					// modify mCacheBitmaps.
+					System.arraycopy(mCacheBitmaps, 0, mSnapshotBitmaps, 0, 3);
+
+					// ensure that our destination image is already correct.
+					// otherwise we may draw invalid data if the animation finished
+					// before all bitmaps were re-created.
+					mCacheSongs[1] = mCacheSongs[1+whichCover];
+					mCacheBitmaps[1] = mCacheBitmaps[1+whichCover];
+					mHandler.sendMessage(mHandler.obtainMessage(MSG_SHIFT_SONG, whichCover, 0));
+				}
+
+				mScroller.scrollTo(scrollTargetX);
+				mHandler.removeMessages(MSG_LONG_CLICK);
+
+				invalidate = true;
+				break;
 			}
 		}
 
-		resetScroll();
-	}
-
-	/**
-	 * Call {@link CoverView#generateBitmap(int)} for the song at the given index.
-	 *
-	 * arg1 should be the index of the song.
-	 */
-	private static final int MSG_GENERATE_BITMAP = 0;
-	/**
-	 * Perform a long click.
-	 *
-	 * @see View#performLongClick()
-	 */
-	private static final int MSG_LONG_CLICK = 2;
-	/**
-	 * Update position for fling scroll animation and, when it is finished,
-	 * notify PlaybackService that the user has requested a track change and
-	 * update the cover art views. Will resend message until scrolling is
-	 * finished.
-	 */
-	private static final int MSG_SCROLL = 3;
-
-	@Override
-	public boolean handleMessage(Message message)
-	{
-		switch (message.what) {
-		case MSG_GENERATE_BITMAP:
-			generateBitmap(message.arg1);
-			break;
-		case MSG_LONG_CLICK:
-			if (Math.abs(mStartX - mLastMotionX) + Math.abs(mStartY - mLastMotionY) < 10) {
-				mIgnoreNextUp = true;
-				performLongClick();
-			}
-			break;
-		case MSG_SCROLL:
-			if (mScroller.computeScrollOffset()) {
-				mScrollX = mScroller.getCurrX();
-				invalidate();
-				mUiHandler.sendEmptyMessage(MSG_SCROLL);
-			} else {
-				mScrolling = false;
-				mActiveBitmaps = mBitmaps;
-			}
-			break;
-		default:
-			return false;
-		}
+		if (invalidate)
+			postInvalidateOnAnimation();
 
 		return true;
 	}
 
-	@Override
-	protected void onMeasure(int widthSpec, int heightSpec)
-	{
-		// This implementation only tries to handle two cases: use in the
-		// FullPlaybackActivity, where we want to fill the whole screen,
-		// and use in the MiniPlaybackActivity, where we want to be square.
-
-		int width = View.MeasureSpec.getSize(widthSpec);
-		int height = View.MeasureSpec.getSize(heightSpec);
-
-		if (View.MeasureSpec.getMode(widthSpec) == View.MeasureSpec.EXACTLY
-			&& View.MeasureSpec.getMode(heightSpec) == View.MeasureSpec.EXACTLY) {
-			// FullPlaybackActivity: fill screen
-			setMeasuredDimension(width, height);
-		} else {
-			// MiniPlaybackActivity: be square
-			int size = Math.min(width, height);
-			setMeasuredDimension(size, size);
-		}
+	/**
+	 * Returns true if the scroll traveled a significant distance
+	 * and is therefore not considered to be random noise during a click.
+	 */
+	private boolean scrollIsNotSignificant() {
+		final float distanceX = mLastMotionX - mInitialMotionX;
+		final float distanceY = mLastMotionY - mInitialMotionY;
+		return Math.abs(distanceX) + Math.abs(distanceY) < TOUCH_MAX_SCROLL_PX;
 	}
+
+	private void DEBUG(String s) {
+		Log.v("VanillaMusicCover", s);
+	}
+
+	private void CRASH_IF_MAIN() {
+		if (Looper.myLooper() == Looper.getMainLooper())
+			throw new IllegalStateException("Must not be called from main thread!");
+	}
+
+	/**
+	 * The scroller class helps to keep track
+	 * of the current scroll progress.
+	 */
+	private class Scroller {
+		/**
+		 * True if we are currently animating
+		 */
+		private boolean mScrollRunning;
+		private int mTargetX;
+
+		/**
+		 * Returns a new scroller instance, assuming
+		 * no animation is running.
+		 */
+		public Scroller() {
+		}
+
+		public boolean scrollRunning() {
+			return mScrollRunning;
+		}
+
+		public int getX() {
+			int x = mScrollX;
+			if (x > mTargetX) {
+				x -= 64;
+				if (x < mTargetX) x = mTargetX;
+			} else if (x < mTargetX) {
+				x += 64;
+				if (x > mTargetX) x = mTargetX;
+			} else {
+				mScrollRunning = false;
+			}
+			return x;
+		}
+
+		public void scrollTo(int x) {//(int from, int to) { // maybe like this? so müssen wir mScrollX nicht kennen :-/
+			mScrollRunning = true;
+			mTargetX = x;
+			DEBUG("FAKE SCROLL TO: "+x);
+		}
+
+	}
+
 }
