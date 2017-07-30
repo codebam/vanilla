@@ -482,15 +482,10 @@ public final class CoverView extends View implements Handler.Callback {
 			boolean forward = velocity < 0;
 			int speed = Math.abs(velocity);
 			int distance = velocity < 0 ? (to-from) : (from-to)*-1;
-			float duration = 1000f * Math.abs(distance) / (1+speed);
-			DEBUG("distance="+distance+", speed="+speed+", duration="+duration);
 
-			if (duration < 200) {
-				duration = 200;
-			} else if (duration > 1000) {
-				duration = 1000;
-			}
-			startScroll(from, 0, distance, 0, (int)duration);
+			//float duration = 1000f * Math.abs(distance) / (1+speed);
+			final int duration = 200;
+			startScroll(from, 0, distance, 0, duration);
 		}
 	}
 
