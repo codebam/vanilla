@@ -33,6 +33,7 @@ import android.view.View;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.ViewConfiguration;
+import android.view.animation.LinearInterpolator;
 import android.widget.Scroller;
 
 import java.lang.IllegalStateException;
@@ -71,7 +72,7 @@ public final class CoverView extends View implements Handler.Callback {
 	/**
 	 * The scroller instance we are using.
 	 */
-	private final CoverView.Scroller mScroller;
+	private final CoverScroller mScroller;
 	/**
 	 * Our callback to dispatch song events.
 	 */
@@ -143,7 +144,7 @@ public final class CoverView extends View implements Handler.Callback {
 			sSnapVelocity = ViewConfiguration.get(context).getScaledMinimumFlingVelocity();
 		}
 		mContext = context;
-		mScroller = new CoverView.Scroller();
+		mScroller = new CoverScroller(context);
 	}
 
 	/**
@@ -312,12 +313,10 @@ public final class CoverView extends View implements Handler.Callback {
 	 * Advances to the next frame of the animation.
 	 */
 	private void advanceScroll() {
-		boolean running = mScroller.scrollRunning();
+		boolean running = mScroller.computeScrollOffset();
 		if (running) {
-			mScrollX = mScroller.getX();
-			postInvalidateOnAnimation();
-
-			if (!mScroller.scrollRunning()) {
+			mScrollX = mScroller.getCurrX();
+			if (mScroller.isFinished()) {
 				// just hit the end!
 				for (int i=0; i <= 2; i++) {
 					mSnapshotBitmaps[i] = null;
@@ -325,7 +324,7 @@ public final class CoverView extends View implements Handler.Callback {
 				mScrollX = getWidth();
 				DEBUG("Scroll finished, invalidating all snapshot bitmaps!");
 			}
-			DEBUG("PENDING INVALIDATION -> "+mScrollX);
+			invalidate();
 		}
 	}
 
@@ -340,7 +339,7 @@ public final class CoverView extends View implements Handler.Callback {
 		int width = getWidth();
 		boolean invalidate = false;
 
-		if (mScroller.scrollRunning()) // Disallow any touches while the animation runs. FIXME: we may want to re-implement this.
+		if (!mScroller.isFinished()) // Disallow any touches while the animation runs. FIXME: we may want to re-implement this.
 			return false;
 
 		if (mVelocityTracker == null)
@@ -381,7 +380,7 @@ public final class CoverView extends View implements Handler.Callback {
 			}
 			case MotionEvent.ACTION_UP: {
 				VelocityTracker velocityTracker = mVelocityTracker;
-				velocityTracker.computeCurrentVelocity(250);
+				velocityTracker.computeCurrentVelocity(1000); // report velocity in pixels-per-second, as assumed by snap-velocity and co.
 				final int velocityX = (int) velocityTracker.getXVelocity();
 				final int velocityY = (int) velocityTracker.getYVelocity();
 				mVelocityTracker.recycle();
@@ -430,7 +429,7 @@ public final class CoverView extends View implements Handler.Callback {
 					mHandler.sendMessage(mHandler.obtainMessage(MSG_SHIFT_SONG, whichCover, 0));
 				}
 
-				mScroller.scrollTo(scrollTargetX);
+				mScroller.handleFling(velocityX, mScrollX, scrollTargetX);
 				mHandler.removeMessages(MSG_LONG_CLICK);
 
 				invalidate = true;
@@ -467,44 +466,32 @@ public final class CoverView extends View implements Handler.Callback {
 	 * The scroller class helps to keep track
 	 * of the current scroll progress.
 	 */
-	private class Scroller {
+	private class CoverScroller extends Scroller {
 		/**
-		 * True if we are currently animating
+		 * Returns a new scroller instance
 		 */
-		private boolean mScrollRunning;
-		private int mTargetX;
-
-		/**
-		 * Returns a new scroller instance, assuming
-		 * no animation is running.
-		 */
-		public Scroller() {
+		public CoverScroller(Context context) {
+			super(context, new LinearInterpolator(), false);
 		}
 
-		public boolean scrollRunning() {
-			return mScrollRunning;
-		}
-
-		public int getX() {
-			int x = mScrollX;
-			if (x > mTargetX) {
-				x -= 64;
-				if (x < mTargetX) x = mTargetX;
-			} else if (x < mTargetX) {
-				x += 64;
-				if (x > mTargetX) x = mTargetX;
-			} else {
-				mScrollRunning = false;
+		public void handleFling(int velocity, int from, int to) {
+			if (!isFinished()) {
+				abortAnimation();
 			}
-			return x;
-		}
 
-		public void scrollTo(int x) {//(int from, int to) { // maybe like this? so müssen wir mScrollX nicht kennen :-/
-			mScrollRunning = true;
-			mTargetX = x;
-			DEBUG("FAKE SCROLL TO: "+x);
-		}
+			boolean forward = velocity < 0;
+			int speed = Math.abs(velocity);
+			int distance = velocity < 0 ? (to-from) : (from-to)*-1;
+			float duration = 1000f * Math.abs(distance) / (1+speed);
+			DEBUG("distance="+distance+", speed="+speed+", duration="+duration);
 
+			if (duration < 200) {
+				duration = 200;
+			} else if (duration > 1000) {
+				duration = 1000;
+			}
+			startScroll(from, 0, distance, 0, (int)duration);
+		}
 	}
 
 }
