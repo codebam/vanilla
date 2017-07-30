@@ -163,7 +163,8 @@ public final class CoverView extends View implements Handler.Callback {
 	 * that we do this in a background thread.
 	 */
 	public void querySongs() {
-		mHandler.sendEmptyMessage(MSG_QUERY_SONGS);
+		mHandler.removeMessages(MSG_QUERY_SONGS);
+		mHandler.sendEmptyMessageDelayed(MSG_QUERY_SONGS, 5);
 	}
 
 	/**
@@ -199,10 +200,10 @@ public final class CoverView extends View implements Handler.Callback {
 			Song song = service.getSong(i - 1);
 			DEBUG(">> SONG AT POS "+i+" is "+song);
 			if (mCacheSongs[i] != song) {
+				DEBUG(">> bitmap at position "+i+" was outdated, now = "+song+", was "+mCacheSongs[i]);
 				mCacheSongs[i] = song;
 				mCacheBitmaps[i] = generateBitmap(song);
 				changed = true;
-				DEBUG(">> !!! was different, updated it.");
 			}
 		}
 
@@ -421,11 +422,25 @@ public final class CoverView extends View implements Handler.Callback {
 					// modify mCacheBitmaps.
 					System.arraycopy(mCacheBitmaps, 0, mSnapshotBitmaps, 0, 3);
 
-					// ensure that our destination image is already correct.
-					// otherwise we may draw invalid data if the animation finished
-					// before all bitmaps were re-created.
-					mCacheSongs[1] = mCacheSongs[1+whichCover];
-					mCacheBitmaps[1] = mCacheBitmaps[1+whichCover];
+					// this is a swipe, so most likely we can save 2 bitmaps by guessing the
+					// new situation. This doesn't have to be 100% correct as the next querySongs()
+					// call would fix up wrong guesses.
+					if (whichCover > 0) {
+						mCacheBitmaps[0] = mCacheBitmaps[1];
+						mCacheSongs[0] = mCacheSongs[1];
+						mCacheBitmaps[1] = mCacheBitmaps[2];
+						mCacheSongs[1] = mCacheSongs[2];
+						mCacheBitmaps[2] = null;
+						mCacheSongs[2] = null;
+					} else {
+						mCacheBitmaps[2] = mCacheBitmaps[1];
+						mCacheSongs[2] = mCacheSongs[1];
+						mCacheBitmaps[1] = mCacheBitmaps[0];
+						mCacheSongs[1] = mCacheSongs[0];
+						mCacheBitmaps[0] = null;
+						mCacheSongs[0] = null;
+					}
+
 					mHandler.sendMessage(mHandler.obtainMessage(MSG_SHIFT_SONG, whichCover, 0));
 				}
 
