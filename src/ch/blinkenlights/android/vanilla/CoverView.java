@@ -355,7 +355,9 @@ public final class CoverView extends View implements Handler.Callback {
 		switch (ev.getAction()) {
 			case MotionEvent.ACTION_DOWN: {
 
-				if (!mScroller.isFinished()) {
+				if (mScroller.isFinished()) {
+					mHandler.sendEmptyMessageDelayed(MSG_LONG_CLICK, ViewConfiguration.getLongPressTimeout());
+				} else {
 					// Animation was still running while we got a new down event
 					// Abort the current animation and undo our bitmap prepareScroll()
 					mBitmapBucket.abortScroll();
@@ -365,7 +367,6 @@ public final class CoverView extends View implements Handler.Callback {
 				mLastMotionX = mInitialMotionX = x;
 				mLastMotionY = mInitialMotionY = y;
 
-				mHandler.sendEmptyMessageDelayed(MSG_LONG_CLICK, ViewConfiguration.getLongPressTimeout());
 				break;
 			}
 			case MotionEvent.ACTION_MOVE: {
