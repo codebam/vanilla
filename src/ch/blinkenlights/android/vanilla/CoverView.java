@@ -353,15 +353,21 @@ public final class CoverView extends View implements Handler.Callback {
 		int width = getWidth();
 		boolean invalidate = false;
 
-		if (!mScroller.isFinished()) // Disallow any touches while the animation runs. FIXME: we may want to re-implement this.
-			return false;
-
 		if (mVelocityTracker == null)
 			mVelocityTracker = VelocityTracker.obtain();
 		mVelocityTracker.addMovement(ev);
 
 		switch (ev.getAction()) {
 			case MotionEvent.ACTION_DOWN: {
+
+				if (!mScroller.isFinished()) {
+					// Animation was still running while we got a new down event
+					// Abort the current animation and *restore* mCacheBitmaps from mSnapshotBitmaps
+					// as our guess done during the down event is now invalid.
+					System.arraycopy(mSnapshotBitmaps, 0, mCacheBitmaps, 0, 3);
+					mScroller.abortAnimation();
+				}
+
 				mLastMotionX = mInitialMotionX = x;
 				mLastMotionY = mInitialMotionY = y;
 
@@ -515,6 +521,11 @@ public final class CoverView extends View implements Handler.Callback {
 			return mCoverIntent;
 		}
 
+		@Override
+		public void abortAnimation() {
+			mCoverIntent = 0;
+			super.abortAnimation();
+		}
 		/**
 		 * Starts a fling operation
 		 *
@@ -530,12 +541,8 @@ public final class CoverView extends View implements Handler.Callback {
 
 			mCoverIntent = coverIntent;
 
-			boolean forward = velocity < 0;
-			int speed = Math.abs(velocity);
-			int distance = velocity < 0 ? (to-from) : (from-to)*-1;
-
-			//float duration = 1000f * Math.abs(distance) / (1+speed);
-			final int duration = 200;
+			final int distance = to - from;
+			final int duration = (int)(Math.abs(distance) / sDensity);
 			startScroll(from, 0, distance, 0, duration);
 		}
 	}
