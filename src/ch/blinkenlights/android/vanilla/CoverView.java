@@ -303,14 +303,14 @@ public final class CoverView extends View implements Handler.Callback {
 		int x = 0;
 		int scrollX = mScrollX;
 		double padding = 14 * sDensity;
+		boolean snapshot = !mScroller.isFinished();
 		Bitmap bitmap;
-		Bitmap[] source = mScroller.isFinished() ? mCacheBitmaps : mSnapshotBitmaps;
 
 		for (int i=0; i <= 2 ; i++) {
-			bitmap = source[i];
+			bitmap = snapshot ? mSnapshotBitmaps[i] : mCacheBitmaps[i];
 			if (bitmap != null && scrollX + width > x && scrollX < x + width) {
-				int xOffset = (width - bitmap.getWidth()) / 2;
-				int yOffset = (int)(padding + (height - bitmap.getHeight()) / 2);
+				final int xOffset = (width - bitmap.getWidth()) / 2;
+				final int yOffset = (int)(padding + (height - bitmap.getHeight()) / 2);
 				canvas.drawBitmap(bitmap, x + xOffset - scrollX, yOffset, null);
 			}
 			x += width;
@@ -429,31 +429,30 @@ public final class CoverView extends View implements Handler.Callback {
 					whichCover = 0;
 
 				final int scrollTargetX = width + whichCover*width;
-				if (whichCover != 0) {
-					synchronized(sWait) {
-						// Grab a snapshot of the bitmaps which will be used
-						// while the animation is running, so that we can concurrently
-						// modify mCacheBitmaps.
-						System.arraycopy(mCacheBitmaps, 0, mSnapshotBitmaps, 0, 3);
 
-						// this is a swipe, so most likely we can save 2 bitmaps by guessing the
-						// new situation. This doesn't have to be 100% correct as the next querySongs()
-						// call would fix up wrong guesses.
-						if (whichCover > 0) {
-							mCacheBitmaps[0] = mCacheBitmaps[1];
-							mCacheSongs[0] = mCacheSongs[1];
-							mCacheBitmaps[1] = mCacheBitmaps[2];
-							mCacheSongs[1] = mCacheSongs[2];
-							mCacheBitmaps[2] = null;
-							mCacheSongs[2] = new Song(-1);
-						} else {
-							mCacheBitmaps[2] = mCacheBitmaps[1];
-							mCacheSongs[2] = mCacheSongs[1];
-							mCacheBitmaps[1] = mCacheBitmaps[0];
-							mCacheSongs[1] = mCacheSongs[0];
-							mCacheBitmaps[0] = null;
-							mCacheSongs[0] = new Song(-1);
-						}
+				synchronized (sWait) {
+					// Grab a snapshot of the bitmaps which will be used
+					// while the animation is running, so that we can concurrently
+					// modify mCacheBitmaps.
+					System.arraycopy(mCacheBitmaps, 0, mSnapshotBitmaps, 0, 3);
+
+					// this is a swipe, so most likely we can save 2 bitmaps by guessing the
+					// new situation. This doesn't have to be 100% correct as the next querySongs()
+					// call would fix up wrong guesses.
+					if (whichCover > 0) {
+						mCacheBitmaps[0] = mCacheBitmaps[1];
+						mCacheSongs[0] = mCacheSongs[1];
+						mCacheBitmaps[1] = mCacheBitmaps[2];
+						mCacheSongs[1] = mCacheSongs[2];
+						mCacheBitmaps[2] = null;
+						mCacheSongs[2] = new Song(-1);
+					} else if (whichCover < 0) {
+						mCacheBitmaps[2] = mCacheBitmaps[1];
+						mCacheSongs[2] = mCacheSongs[1];
+						mCacheBitmaps[1] = mCacheBitmaps[0];
+						mCacheSongs[1] = mCacheSongs[0];
+						mCacheBitmaps[0] = null;
+						mCacheSongs[0] = new Song(-1);
 					}
 				}
 
