@@ -304,9 +304,10 @@ public final class CoverView extends View implements Handler.Callback {
 		int scrollX = mScrollX;
 		double padding = 14 * sDensity;
 		Bitmap bitmap;
+		Bitmap[] source = mScroller.isFinished() ? mCacheBitmaps : mSnapshotBitmaps;
 
 		for (int i=0; i <= 2 ; i++) {
-			bitmap = mSnapshotBitmaps[i] != null ? mSnapshotBitmaps[i] : mCacheBitmaps[i];
+			bitmap = source[i];
 			if (bitmap != null && scrollX + width > x && scrollX < x + width) {
 				int xOffset = (width - bitmap.getWidth()) / 2;
 				int yOffset = (int)(padding + (height - bitmap.getHeight()) / 2);
