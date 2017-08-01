@@ -132,7 +132,7 @@ public final class CoverView extends View implements Handler.Callback {
 		super(context, attributes);
 		if (sDensity == -1) {
 			sDensity = context.getResources().getDisplayMetrics().density;
-			sSnapVelocity = ViewConfiguration.get(context).getScaledMinimumFlingVelocity();
+			sSnapVelocity = ViewConfiguration.get(context).getScaledMinimumFlingVelocity() * 5;
 		}
 		mContext = context;
 		mBitmapBucket = new BitmapBucket();
@@ -617,7 +617,10 @@ public final class CoverView extends View implements Handler.Callback {
 			mCoverIntent = coverIntent;
 
 			final int distance = to - from;
-			final int duration = (int)(Math.abs(distance) / sDensity);
+			int duration = (int)(Math.abs(distance) / sDensity);
+			if (duration > 200)
+				duration = 200;
+
 			startScroll(from, 0, distance, 0, duration);
 		}
 	}
