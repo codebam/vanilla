@@ -180,29 +180,38 @@ public final class CoverView extends View implements Handler.Callback {
 			return;
 		}
 
-		boolean changed = false;
-		PlaybackService service = PlaybackService.get(mContext);
-
 		if (mScrollX < 0) { // initialize mScrollX to show cover '1' by default.
 			mScrollX = getWidth();
-			changed = true;
 		}
 
-		for (int i = 0; i <= 2; i++) {
-			Song song = service.getSong(i - 1);
-			DEBUG(">> SONG AT POS "+i+" is "+song);
+		mHandler.removeMessages(MSG_SET_BITMAP);
+		PlaybackService service = PlaybackService.get(mContext);
+
+		final Song[] songs = { service.getSong(-1), service.getSong(0), service.getSong(1) };
+		final int len = songs.length;
+
+		for (int i = 0; i < len; i++) {
+			Song song = songs[i];
 			if (mBitmapBucket.getSong(i) != song) {
-				DEBUG(">> bitmap at position "+i+" was outdated, now = "+song+", was "+mBitmapBucket.getSong(i));
-				Bitmap bitmap = generateBitmap(song);
-				mBitmapBucket.setSongBitmap(i, song, bitmap);
-				changed = true;
+				mHandler.sendMessage(mHandler.obtainMessage(MSG_SET_BITMAP, i, 0, song));
 			}
 		}
+	}
 
-		if (changed) {
-			DEBUG("Invalidating current view!");
-			postInvalidateOnAnimation();
-		}
+	/**
+	 * Updates the cover in bitmap bucket for given index.
+	 *
+	 * @param i the index to modify
+	 * @param song the source of the cover
+	 */
+	private void setSongBitmap(int i, Song song) {
+		Bitmap bitmap = mBitmapBucket.grepBitmap(song);
+
+		if (bitmap == null)
+			bitmap = generateBitmap(song);
+
+		mBitmapBucket.setSongBitmap(i, song, bitmap);
+		postInvalidateOnAnimation();
 	}
 
 	/**
@@ -223,6 +232,7 @@ public final class CoverView extends View implements Handler.Callback {
 	private final static int MSG_QUERY_SONGS = 1;
 	private final static int MSG_LONG_CLICK = 2;
 	private final static int MSG_SHIFT_SONG = 3;
+	private final static int MSG_SET_BITMAP = 4;
 
 	@Override
 	public boolean handleMessage(Message message) {
@@ -238,6 +248,9 @@ public final class CoverView extends View implements Handler.Callback {
 			case MSG_SHIFT_SONG:
 				DEBUG("Shifting to song: "+message.arg1);
 				mCallback.shiftCurrentSong(message.arg1);
+				break;
+			case MSG_SET_BITMAP:
+				setSongBitmap(message.arg1, (Song)message.obj);
 				break;
 			default:
 				throw new IllegalArgumentException("Unknown message received: "+message.what);
@@ -497,6 +510,16 @@ public final class CoverView extends View implements Handler.Callback {
 		public void setSongBitmap(int i, Song song, Bitmap bitmap) {
 			mCacheSongs[i] = song;
 			mCacheBitmaps[i] = bitmap;
+		}
+
+		public Bitmap grepBitmap(Song song) {
+			final int len = mCacheSongs.length;
+			for (int i = 0; i < len ; i++) {
+				if (mCacheSongs[i] == song) {
+					return mCacheBitmaps[i];
+				}
+			}
+			return null;
 		}
 
 		/**
