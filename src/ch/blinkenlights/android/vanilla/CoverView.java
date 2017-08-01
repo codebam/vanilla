@@ -156,7 +156,7 @@ public final class CoverView extends View implements Handler.Callback {
 	 */
 	public void querySongs() {
 		mHandler.removeMessages(MSG_QUERY_SONGS);
-		mHandler.sendEmptyMessageDelayed(MSG_QUERY_SONGS, 5);
+		mHandler.sendEmptyMessage(MSG_QUERY_SONGS);
 	}
 
 	/**
@@ -172,7 +172,6 @@ public final class CoverView extends View implements Handler.Callback {
 	 * Called by querySongs() - this runs in a background thread.
 	 */
 	private void querySongsInternal() {
-		CRASH_IF_MAIN();
 		DEBUG("querySongsInternal");
 
 		if (getWidth() < 1 || getHeight() < 1) {
@@ -458,11 +457,6 @@ public final class CoverView extends View implements Handler.Callback {
 
 	private void DEBUG(String s) {
 		Log.v("VanillaMusicCover", s);
-	}
-
-	private void CRASH_IF_MAIN() {
-		if (Looper.myLooper() == Looper.getMainLooper())
-			throw new IllegalStateException("Must not be called from main thread!");
 	}
 
 
