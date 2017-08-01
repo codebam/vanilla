@@ -74,6 +74,10 @@ public final class CoverView extends View implements Handler.Callback {
 	 */
 	private final CoverScroller mScroller;
 	/**
+	 * Our bitmap cache helper
+	 */
+	private BitmapBucket mBitmapBucket;
+	/**
 	 * Our callback to dispatch song events.
 	 */
 	private CoverView.Callback mCallback;
@@ -112,23 +116,6 @@ public final class CoverView extends View implements Handler.Callback {
 	 */
 	private int mCoverStyle = -1;
 	/**
-	 * Cached songs, used to check if mCacheBitmaps is still valid
-	 */
-	private final Song[] mCacheSongs = new Song[3];
-	/**
-	 * The pre-generated bitmaps for all 3 songs
-	 */
-	private final Bitmap[] mCacheBitmaps = new Bitmap[3];
-	/**
-	 * A WIP copy: We use this (iff available) to draw.
-	 * This allows us to update mCacheBitmaps while scrolling
-	 */
-	private final Bitmap[] mSnapshotBitmaps = new Bitmap[3];
-	/**
-	 * Lock used for modification of mCache* objects
-	 */
-	private static final Object[] sWait = new Object[0];
-	/**
 	 * Our public callback interface
 	 */
 	public interface Callback {
@@ -148,6 +135,7 @@ public final class CoverView extends View implements Handler.Callback {
 			sSnapVelocity = ViewConfiguration.get(context).getScaledMinimumFlingVelocity();
 		}
 		mContext = context;
+		mBitmapBucket = new BitmapBucket();
 		mScroller = new CoverScroller(context);
 	}
 
@@ -203,13 +191,10 @@ public final class CoverView extends View implements Handler.Callback {
 		for (int i = 0; i <= 2; i++) {
 			Song song = service.getSong(i - 1);
 			DEBUG(">> SONG AT POS "+i+" is "+song);
-			if (mCacheSongs[i] != song) {
-				DEBUG(">> bitmap at position "+i+" was outdated, now = "+song+", was "+mCacheSongs[i]);
+			if (mBitmapBucket.getSong(i) != song) {
+				DEBUG(">> bitmap at position "+i+" was outdated, now = "+song+", was "+mBitmapBucket.getSong(i));
 				Bitmap bitmap = generateBitmap(song);
-				synchronized(sWait) {
-					mCacheSongs[i] = song;
-					mCacheBitmaps[i] = bitmap;
-				}
+				mBitmapBucket.setSongBitmap(i, song, bitmap);
 				changed = true;
 			}
 		}
@@ -307,7 +292,7 @@ public final class CoverView extends View implements Handler.Callback {
 		Bitmap bitmap;
 
 		for (int i=0; i <= 2 ; i++) {
-			bitmap = snapshot ? mSnapshotBitmaps[i] : mCacheBitmaps[i];
+			bitmap = snapshot ? mBitmapBucket.getSnapshot(i) : mBitmapBucket.getBitmap(i);
 			if (bitmap != null && scrollX + width > x && scrollX < x + width) {
 				final int xOffset = (width - bitmap.getWidth()) / 2;
 				final int yOffset = (int)(padding + (height - bitmap.getHeight()) / 2);
@@ -327,9 +312,7 @@ public final class CoverView extends View implements Handler.Callback {
 			mScrollX = mScroller.getCurrX();
 			if (mScroller.isFinished()) {
 				// just hit the end!
-				for (int i=0; i <= 2; i++) {
-					mSnapshotBitmaps[i] = null;
-				}
+				mBitmapBucket.finalizeScroll();
 				mScrollX = getWidth();
 
 				int coverIntent = mScroller.getCoverIntent();
@@ -362,9 +345,8 @@ public final class CoverView extends View implements Handler.Callback {
 
 				if (!mScroller.isFinished()) {
 					// Animation was still running while we got a new down event
-					// Abort the current animation and *restore* mCacheBitmaps from mSnapshotBitmaps
-					// as our guess done during the down event is now invalid.
-					System.arraycopy(mSnapshotBitmaps, 0, mCacheBitmaps, 0, 3);
+					// Abort the current animation and undo our bitmap prepareScroll()
+					mBitmapBucket.abortScroll();
 					mScroller.abortAnimation();
 				}
 
@@ -380,7 +362,7 @@ public final class CoverView extends View implements Handler.Callback {
 
 				if (Math.abs(deltaX) > Math.abs(deltaY)) { // only change X if the fling is horizontal
 					if (deltaX < 0) {
-						int availableToScroll = scrollX - (mCacheSongs[0] == null ? width : 0);
+						int availableToScroll = scrollX - (mBitmapBucket.getSong(0) == null ? width : 0);
 						if (availableToScroll > 0) {
 							mScrollX += Math.max(-availableToScroll, (int)deltaX);
 							invalidate = true;
@@ -431,37 +413,12 @@ public final class CoverView extends View implements Handler.Callback {
 
 				// Ensure that the target song actually exists.
 				// Eg: We may not have song 0 in random mode.
-				if (mCacheSongs[1+whichCover] == null)
+				if (mBitmapBucket.getSong(1+whichCover) == null)
 					whichCover = 0;
 
 				final int scrollTargetX = width + whichCover*width;
 
-				synchronized (sWait) {
-					// Grab a snapshot of the bitmaps which will be used
-					// while the animation is running, so that we can concurrently
-					// modify mCacheBitmaps.
-					System.arraycopy(mCacheBitmaps, 0, mSnapshotBitmaps, 0, 3);
-
-					// this is a swipe, so most likely we can save 2 bitmaps by guessing the
-					// new situation. This doesn't have to be 100% correct as the next querySongs()
-					// call would fix up wrong guesses.
-					if (whichCover > 0) {
-						mCacheBitmaps[0] = mCacheBitmaps[1];
-						mCacheSongs[0] = mCacheSongs[1];
-						mCacheBitmaps[1] = mCacheBitmaps[2];
-						mCacheSongs[1] = mCacheSongs[2];
-						mCacheBitmaps[2] = null;
-						mCacheSongs[2] = new Song(-1);
-					} else if (whichCover < 0) {
-						mCacheBitmaps[2] = mCacheBitmaps[1];
-						mCacheSongs[2] = mCacheSongs[1];
-						mCacheBitmaps[1] = mCacheBitmaps[0];
-						mCacheSongs[1] = mCacheSongs[0];
-						mCacheBitmaps[0] = null;
-						mCacheSongs[0] = new Song(-1);
-					}
-				}
-
+				mBitmapBucket.prepareScroll(whichCover);
 				mScroller.handleFling(velocityX, mScrollX, scrollTargetX, whichCover);
 				mHandler.removeMessages(MSG_LONG_CLICK);
 
@@ -493,6 +450,107 @@ public final class CoverView extends View implements Handler.Callback {
 	private void CRASH_IF_MAIN() {
 		if (Looper.myLooper() == Looper.getMainLooper())
 			throw new IllegalStateException("Must not be called from main thread!");
+	}
+
+
+	/**
+	 * Class to handle access to our bitmap and song mapping
+	 */
+	private class BitmapBucket {
+		/**
+		 * The pre-generated bitmaps for all 3 songs
+		 */
+		private final Bitmap[] mCacheBitmaps = new Bitmap[3];
+		/**
+		 * Cached songs, used to check if mCacheBitmaps is still valid
+		 */
+		private final Song[] mCacheSongs = new Song[3];
+		/**
+		 * A WIP copy: We use this (iff available) to draw.
+		 * This allows us to update mCacheBitmaps while scrolling
+		 */
+		private final Bitmap[] mSnapshotBitmaps = new Bitmap[3];
+		/**
+		 * A WIP copy of songs, used if we have to restore
+		 * This snapshot is only used internally and copied
+		 * to mCacheBitmaps if we restore our bitmap snapshot.
+		 */
+		private final Song[] mSnapshotSongs = new Song[3];
+		/**
+		 * Constructor for BitmapBucket
+		 */
+		public BitmapBucket() {
+		}
+
+		public Song getSong(int i) {
+			return mCacheSongs[i];
+		}
+
+		public Bitmap getBitmap(int i) {
+			return mCacheBitmaps[i];
+		}
+
+		public Bitmap getSnapshot(int i) {
+			return mSnapshotBitmaps[i];
+		}
+
+		public void setSongBitmap(int i, Song song, Bitmap bitmap) {
+			mCacheSongs[i] = song;
+			mCacheBitmaps[i] = bitmap;
+		}
+
+		/**
+		 * Hint that we are going to scroll.
+		 * This causes us to populate our bitmap snapshot
+		 * and will cause us to modify the current cache with a guess.
+		 *
+		 * @param futureCover the cover we are going to scroll to
+		 */
+		public void prepareScroll(int futureCover) {
+			// Grab a snapshot of the bitmaps which will be used
+			// while the animation is running, so that we can concurrently
+			// modify mCacheBitmaps.
+			System.arraycopy(mCacheBitmaps, 0, mSnapshotBitmaps, 0, 3);
+			System.arraycopy(mCacheSongs, 0, mSnapshotSongs, 0, 3);
+
+			// we are going to scroll, so most likely we can save 2 bitmaps by guessing the
+			// new situation. This doesn't have to be 100% correct as the next querySongs()
+			// call would fix up wrong guesses.
+			// FIXME: This may be under-locked: cache checks via getSong() and prepareScroll() may race.
+			if (futureCover > 0) {
+				mCacheBitmaps[0] = mCacheBitmaps[1];
+				mCacheSongs[0] = mCacheSongs[1];
+				mCacheBitmaps[1] = mCacheBitmaps[2];
+				mCacheSongs[1] = mCacheSongs[2];
+				mCacheBitmaps[2] = null;
+				mCacheSongs[2] = new Song(-1);
+			} else if (futureCover < 0) {
+				mCacheBitmaps[2] = mCacheBitmaps[1];
+				mCacheSongs[2] = mCacheSongs[1];
+				mCacheBitmaps[1] = mCacheBitmaps[0];
+				mCacheSongs[1] = mCacheSongs[0];
+				mCacheBitmaps[0] = null;
+				mCacheSongs[0] = new Song(-1);
+			}
+		}
+
+		/**
+		 * Abort a scroll initiated by prepareScroll.
+		 */
+		public void abortScroll() {
+			// undo our guess we did in prepareScroll
+			System.arraycopy(mSnapshotBitmaps, 0, mCacheBitmaps, 0, 3);
+			System.arraycopy(mSnapshotSongs, 0, mCacheSongs, 0, 3);
+			finalizeScroll();
+		}
+
+		public void finalizeScroll() {
+			for (int i=0; i <= 2; i++) {
+				mSnapshotBitmaps[i] = null;
+				mSnapshotSongs[i] = null;
+			}
+		}
+
 	}
 
 	/**
