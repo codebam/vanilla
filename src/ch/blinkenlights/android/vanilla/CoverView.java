@@ -125,6 +125,10 @@ public final class CoverView extends View implements Handler.Callback {
 	 */
 	private final Bitmap[] mSnapshotBitmaps = new Bitmap[3];
 	/**
+	 * Lock used for modification of mCache* objects
+	 */
+	private static final Object[] sWait = new Object[0];
+	/**
 	 * Our public callback interface
 	 */
 	public interface Callback {
@@ -201,8 +205,11 @@ public final class CoverView extends View implements Handler.Callback {
 			DEBUG(">> SONG AT POS "+i+" is "+song);
 			if (mCacheSongs[i] != song) {
 				DEBUG(">> bitmap at position "+i+" was outdated, now = "+song+", was "+mCacheSongs[i]);
-				mCacheSongs[i] = song;
-				mCacheBitmaps[i] = generateBitmap(song);
+				Bitmap bitmap = generateBitmap(song);
+				synchronized(sWait) {
+					mCacheSongs[i] = song;
+					mCacheBitmaps[i] = bitmap;
+				}
 				changed = true;
 			}
 		}
@@ -323,6 +330,11 @@ public final class CoverView extends View implements Handler.Callback {
 					mSnapshotBitmaps[i] = null;
 				}
 				mScrollX = getWidth();
+
+				int coverIntent = mScroller.getCoverIntent();
+				if (coverIntent != 0)
+					mHandler.sendMessage(mHandler.obtainMessage(MSG_SHIFT_SONG, coverIntent, 0));
+
 				DEBUG("Scroll finished, invalidating all snapshot bitmaps!");
 			}
 			invalidate();
@@ -417,34 +429,34 @@ public final class CoverView extends View implements Handler.Callback {
 
 				final int scrollTargetX = width + whichCover*width;
 				if (whichCover != 0) {
-					// Grab a snapshot of the bitmaps which will be used
-					// while the animation is running, so that we can concurrently
-					// modify mCacheBitmaps.
-					System.arraycopy(mCacheBitmaps, 0, mSnapshotBitmaps, 0, 3);
+					synchronized(sWait) {
+						// Grab a snapshot of the bitmaps which will be used
+						// while the animation is running, so that we can concurrently
+						// modify mCacheBitmaps.
+						System.arraycopy(mCacheBitmaps, 0, mSnapshotBitmaps, 0, 3);
 
-					// this is a swipe, so most likely we can save 2 bitmaps by guessing the
-					// new situation. This doesn't have to be 100% correct as the next querySongs()
-					// call would fix up wrong guesses.
-					if (whichCover > 0) {
-						mCacheBitmaps[0] = mCacheBitmaps[1];
-						mCacheSongs[0] = mCacheSongs[1];
-						mCacheBitmaps[1] = mCacheBitmaps[2];
-						mCacheSongs[1] = mCacheSongs[2];
-						mCacheBitmaps[2] = null;
-						mCacheSongs[2] = null;
-					} else {
-						mCacheBitmaps[2] = mCacheBitmaps[1];
-						mCacheSongs[2] = mCacheSongs[1];
-						mCacheBitmaps[1] = mCacheBitmaps[0];
-						mCacheSongs[1] = mCacheSongs[0];
-						mCacheBitmaps[0] = null;
-						mCacheSongs[0] = null;
+						// this is a swipe, so most likely we can save 2 bitmaps by guessing the
+						// new situation. This doesn't have to be 100% correct as the next querySongs()
+						// call would fix up wrong guesses.
+						if (whichCover > 0) {
+							mCacheBitmaps[0] = mCacheBitmaps[1];
+							mCacheSongs[0] = mCacheSongs[1];
+							mCacheBitmaps[1] = mCacheBitmaps[2];
+							mCacheSongs[1] = mCacheSongs[2];
+							mCacheBitmaps[2] = null;
+							mCacheSongs[2] = new Song(-1);
+						} else {
+							mCacheBitmaps[2] = mCacheBitmaps[1];
+							mCacheSongs[2] = mCacheSongs[1];
+							mCacheBitmaps[1] = mCacheBitmaps[0];
+							mCacheSongs[1] = mCacheSongs[0];
+							mCacheBitmaps[0] = null;
+							mCacheSongs[0] = new Song(-1);
+						}
 					}
-
-					mHandler.sendMessage(mHandler.obtainMessage(MSG_SHIFT_SONG, whichCover, 0));
 				}
 
-				mScroller.handleFling(velocityX, mScrollX, scrollTargetX);
+				mScroller.handleFling(velocityX, mScrollX, scrollTargetX, whichCover);
 				mHandler.removeMessages(MSG_LONG_CLICK);
 
 				invalidate = true;
@@ -483,16 +495,40 @@ public final class CoverView extends View implements Handler.Callback {
 	 */
 	private class CoverScroller extends Scroller {
 		/**
+		 * The cover we are scrolling to
+		 */
+		private int mCoverIntent;
+		/**
 		 * Returns a new scroller instance
 		 */
 		public CoverScroller(Context context) {
 			super(context, new LinearInterpolator(), false);
 		}
 
-		public void handleFling(int velocity, int from, int to) {
+		/**
+		 * Returns the cover set by the last handleFling
+		 * call.
+		 *
+		 * @return int the cover set by handleFling.
+		 */
+		public int getCoverIntent() {
+			return mCoverIntent;
+		}
+
+		/**
+		 * Starts a fling operation
+		 *
+		 * @param velocity the current velocity
+		 * @param from the current x coordinate
+		 * @param to the target x coordinate
+		 * @param coverIntent the cover we are scrolling to, returned by getCoverIntent()
+		 */
+		public void handleFling(int velocity, int from, int to, int coverIntent) {
 			if (!isFinished()) {
 				abortAnimation();
 			}
+
+			mCoverIntent = coverIntent;
 
 			boolean forward = velocity < 0;
 			int speed = Math.abs(velocity);
